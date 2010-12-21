@@ -2,13 +2,11 @@ import csv, codecs
 from django.http import HttpResponse
 from django.core.exceptions import ObjectDoesNotExist
 from django.contrib.auth.views import redirect_to_login
-from django.views.decorators.http import condition
 try:
     from cStringIO import StringIO
-except:
+except ImportError:
     from StringIO import StringIO
 
-@condition(etag_func=None)
 def export_csv(request, queryset, export_data, filter_by=None, file_name='exported_data.csv',
         object_id=None, not_available='n.a.', require_permission=None):
     '''
@@ -42,11 +40,6 @@ def export_csv(request, queryset, export_data, filter_by=None, file_name='export
     if filter_by and object_id:
         queryset = queryset.filter(**{'%s' % filter_by: object_id})
     
-    rsp = HttpResponse(streaming_csv_response(), mimetype='text/csv', content_type='text/csv; charset=utf-8')
-    filename = object_id and callable(file_name) and file_name(object_id) or file_name
-    rsp['Content-Disposition'] = 'attachment; filename=%s' % filename.encode('utf-8')
-    rsp.write(codecs.BOM_UTF8)
-    
     def get_attr(object, attrs=None):
         if attrs == None or attrs == []:
             return object
@@ -58,16 +51,17 @@ def export_csv(request, queryset, export_data, filter_by=None, file_name='export
         except (ObjectDoesNotExist, AttributeError):
             return not_available
     
-    def stream_bit(data):
-        stringio = StringIO()
-        writer = csv.writer(stringio)
+    def stream_csv(data):
+        sio = StringIO()
+        writer = csv.writer(sio)
         writer.writerow(data)
-        return stringio.getvalue()
+        return sio.getvalue()
     
-    def streaming_csv_response():
-        yield stream_bit(export_data.values())
+    def streaming_response_generator():
+        yield codecs.BOM_UTF8
+        yield stream_csv(export_data.values())
         
-        for item in queryset:
+        for item in queryset.iterator():
             row = []
             for attr in export_data.keys():
                 obj = get_attr(item, attr.split('.'))
@@ -80,5 +74,11 @@ def export_csv(request, queryset, export_data, filter_by=None, file_name='export
                 elif isinstance(res, str) is False:
                     res = str(res)
                 row.append(res)
-            yield stream_bit(row)
+            yield stream_csv(row)
+    
+    rsp = HttpResponse(streaming_response_generator(), 
+                        mimetype='text/csv', 
+                        content_type='text/csv; charset=utf-8')
+    filename = object_id and callable(file_name) and file_name(object_id) or file_name
+    rsp['Content-Disposition'] = 'attachment; filename=%s' % filename.encode('utf-8')
     return rsp
