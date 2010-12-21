@@ -1,8 +1,14 @@
 import csv, codecs
-from django.http import HttpResponse, Http404
+from django.http import HttpResponse
 from django.core.exceptions import ObjectDoesNotExist
 from django.contrib.auth.views import redirect_to_login
+from django.views.decorators.http import condition
+try:
+    from cStringIO import StringIO
+except:
+    from StringIO import StringIO
 
+@condition(etag_func=None)
 def export_csv(request, queryset, export_data, filter_by=None, file_name='exported_data.csv',
         object_id=None, not_available='n.a.', require_permission=None):
     '''
@@ -35,17 +41,12 @@ def export_csv(request, queryset, export_data, filter_by=None, file_name='export
     queryset = queryset._clone()
     if filter_by and object_id:
         queryset = queryset.filter(**{'%s' % filter_by: object_id})
-    if queryset.count() == 0:
-        raise Http404
     
-    rsp = HttpResponse(mimetype='text/csv', content_type='text/csv; charset=utf-8')
+    rsp = HttpResponse(streaming_csv_response(), mimetype='text/csv', content_type='text/csv; charset=utf-8')
     filename = object_id and callable(file_name) and file_name(object_id) or file_name
     rsp['Content-Disposition'] = 'attachment; filename=%s' % filename.encode('utf-8')
     rsp.write(codecs.BOM_UTF8)
-        
-    writer = csv.writer(rsp)
-    writer.writerow(export_data.values())
-        
+    
     def get_attr(object, attrs=None):
         if attrs == None or attrs == []:
             return object
@@ -56,19 +57,28 @@ def export_csv(request, queryset, export_data, filter_by=None, file_name='export
                         getattr(object, current), attrs)
         except (ObjectDoesNotExist, AttributeError):
             return not_available
-           
-    for item in queryset:
-        row = []
-        for attr in export_data.keys():
-            obj = get_attr(item, attr.split('.'))
-            if callable(obj):
-                res = obj()
-            else:
-                res = obj
-            if isinstance(res, unicode) is True:
-                res = res.encode('utf-8')
-            elif isinstance(res, str) is False:
-                res = str(res)
-            row.append(res)
-        writer.writerow(row)
+    
+    def stream_bit(data):
+        stringio = StringIO()
+        writer = csv.writer(stringio)
+        writer.writerow(data)
+        return stringio.getvalue()
+    
+    def streaming_csv_response():
+        yield stream_bit(export_data.values())
+        
+        for item in queryset:
+            row = []
+            for attr in export_data.keys():
+                obj = get_attr(item, attr.split('.'))
+                if callable(obj):
+                    res = obj()
+                else:
+                    res = obj
+                if isinstance(res, unicode) is True:
+                    res = res.encode('utf-8')
+                elif isinstance(res, str) is False:
+                    res = str(res)
+                row.append(res)
+            yield stream_bit(row)
     return rsp
